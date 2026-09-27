@@ -2,10 +2,12 @@ package org.example.service;
 
 import org.example.model.User;
 import org.example.repository.UserRepository;
+import org.example.security.AppUserDetails;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class CustomUserDetailsService implements UserDetailsService {
@@ -17,14 +19,10 @@ public class CustomUserDetailsService implements UserDetailsService {
     }
 
     @Override
+    @Transactional(readOnly = true)
     public UserDetails loadUserByUsername(String email) throws UsernameNotFoundException {
         User user = userRepository.findByEmail(email)
-                .orElseThrow(() -> new UsernameNotFoundException("User not found with email: " + email));
-
-        return org.springframework.security.core.userdetails.User.builder()
-                .username(user.getEmail())
-                .password(user.getPasswordHash())
-                .authorities("ROLE_" + user.getRole().name())
-                .build();
+                .orElseThrow(() -> new UsernameNotFoundException("User not found"));
+        return new AppUserDetails(user);
     }
 }

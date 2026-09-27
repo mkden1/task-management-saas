@@ -1,13 +1,18 @@
 package org.example.controller;
 
 import jakarta.validation.Valid;
-import org.example.config.JwtUtil;
 import org.example.dto.ProjectCreateRequest;
 import org.example.model.Project;
-import org.example.model.Task;
 import org.example.repository.ProjectRepository;
 import org.example.repository.TaskRepository;
+import org.example.security.AppUserDetails;
+import org.example.security.Roles;
+import org.springframework.http.HttpStatus;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
 
@@ -17,63 +22,42 @@ public class ProjectController {
 
     private final ProjectRepository projectRepository;
     private final TaskRepository taskRepository;
-    private final JwtUtil jwtUtil;
 
-    public ProjectController(ProjectRepository projectRepository, TaskRepository taskRepository, JwtUtil jwtUtil) {
+    public ProjectController(ProjectRepository projectRepository, TaskRepository taskRepository) {
         this.projectRepository = projectRepository;
         this.taskRepository = taskRepository;
-        this.jwtUtil = jwtUtil;
+    }
+
+    @GetMapping
+    public List<Project> getAllProjects(@AuthenticationPrincipal AppUserDetails me) {
+        return projectRepository.findByOrganizationId(me.getOrganizationId());
     }
 
     @PutMapping("/{id}")
-    public Project updateProject(@PathVariable Long id, 
-                               @Valid @RequestBody ProjectCreateRequest projectRequest,
-                               @RequestHeader("Authorization") String token) {
-        String jwt = token.substring(7);
-        Long organizationId = jwtUtil.extractOrganizationId(jwt);
-        
-        Project project = projectRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Project not found"));
-
-        // Verify project belongs to organization
-        if (!project.getOrganization().getId().equals(organizationId)) {
-            throw new RuntimeException("Unauthorized access to project");
-        }
-
-        project.setName(projectRequest.getName());
-        project.setDescription(projectRequest.getDescription());
-
+    @PreAuthorize(Roles.CAN_WRITE)
+    public Project updateProject(@PathVariable Long id, @Valid @RequestBody ProjectCreateRequest request,
+                                 @AuthenticationPrincipal AppUserDetails me) {
+        Project project = findProjectInOrganization(id, me);
+        project.setName(request.getName());
+        project.setDescription(request.getDescription());
         return projectRepository.save(project);
     }
 
     @DeleteMapping("/{id}")
-    public void deleteProject(@PathVariable Long id, @RequestHeader("Authorization") String token) {
-        String jwt = token.substring(7);
-        Long organizationId = jwtUtil.extractOrganizationId(jwt);
-        
-        Project project = projectRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Project not found"));
-
-        // Verify project belongs to organization
-        if (!project.getOrganization().getId().equals(organizationId)) {
-            throw new RuntimeException("Unauthorized access to project");
-        }
-
-        // First, delete all tasks associated with this project
-        List<Task> tasksToDelete = taskRepository.findByProjectId(id);
-        if (!tasksToDelete.isEmpty()) {
-            taskRepository.deleteAll(tasksToDelete);
-        }
-
-        // Then delete the project
+    @PreAuthorize(Roles.ADMIN_ONLY)
+    @Transactional
+    public void deleteProject(@PathVariable Long id, @AuthenticationPrincipal AppUserDetails me) {
+        Project project = findProjectInOrganization(id, me);
+        taskRepository.deleteAll(taskRepository.findByProjectId(id));
         projectRepository.delete(project);
     }
 
-    @GetMapping
-    public List<Project> getAllProjects(@RequestHeader("Authorization") String token) {
-        String jwt = token.substring(7);
-        Long organizationId = jwtUtil.extractOrganizationId(jwt);
-        
-        return projectRepository.findByOrganizationId(organizationId);
+    // A project in another organization is reported as "not found" so its existence is not revealed.
+    private Project findProjectInOrganization(Long id, AppUserDetails me) {
+        Project project = projectRepository.findByIdAndOrganizationId(id, me.getOrganizationId());
+        if (project == null) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Project not found");
+        }
+        return project;
     }
 }

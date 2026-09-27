@@ -1,5 +1,6 @@
 package org.example.model;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import jakarta.persistence.*;
 import jakarta.validation.constraints.Email;
@@ -25,6 +26,7 @@ public class User {
     
     @NotBlank
     @Column(name = "password_hash", nullable = false)
+    @JsonIgnore
     private String passwordHash;
     
     @Column(name = "first_name")

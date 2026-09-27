@@ -1,18 +1,26 @@
 package org.example.controller;
 
-import org.example.config.JwtUtil;
+import jakarta.validation.Valid;
 import org.example.dto.TaskCreateRequest;
-import org.example.model.Task;
+import org.example.dto.TaskUpdateRequest;
 import org.example.model.Project;
+import org.example.model.Task;
 import org.example.model.User;
-import org.example.repository.TaskRepository;
 import org.example.repository.ProjectRepository;
+import org.example.repository.TaskRepository;
 import org.example.repository.UserRepository;
+import org.example.security.AppUserDetails;
+import org.example.security.Roles;
+import org.springframework.http.HttpStatus;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.server.ResponseStatusException;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.List;
 
 @RestController
@@ -22,136 +30,121 @@ public class TaskController {
     private final TaskRepository taskRepository;
     private final ProjectRepository projectRepository;
     private final UserRepository userRepository;
-    private final JwtUtil jwtUtil;
 
-    public TaskController(TaskRepository taskRepository, ProjectRepository projectRepository, 
-                         UserRepository userRepository, JwtUtil jwtUtil) {
+    public TaskController(TaskRepository taskRepository, ProjectRepository projectRepository,
+                          UserRepository userRepository) {
         this.taskRepository = taskRepository;
         this.projectRepository = projectRepository;
         this.userRepository = userRepository;
-        this.jwtUtil = jwtUtil;
     }
 
     @GetMapping
-    public List<Task> getTasks(@RequestHeader("Authorization") String token) {
-        String jwt = token.substring(7);
-        Long organizationId = jwtUtil.extractOrganizationId(jwt);
-        return taskRepository.findByOrganizationId(organizationId);
+    public List<Task> getTasks(@AuthenticationPrincipal AppUserDetails me) {
+        return taskRepository.findByOrganizationId(me.getOrganizationId());
     }
 
     @GetMapping("/my-tasks")
-    public List<Task> getMyTasks(@RequestHeader("Authorization") String token) {
-        String jwt = token.substring(7);
-        Long userId = jwtUtil.extractUserId(jwt);
-        Long organizationId = jwtUtil.extractOrganizationId(jwt);
-        return taskRepository.findByAssignedToAndOrganizationId(userId, organizationId);
+    public List<Task> getMyTasks(@AuthenticationPrincipal AppUserDetails me) {
+        return taskRepository.findByAssignedToAndOrganizationId(me.getId(), me.getOrganizationId());
     }
 
     @PostMapping
-    public Task createTask(@RequestBody TaskCreateRequest taskRequest, @RequestHeader("Authorization") String token) {
-        String jwt = token.substring(7);
-        Long organizationId = jwtUtil.extractOrganizationId(jwt);
-        Long userId = jwtUtil.extractUserId(jwt);
-        
-        // Debug logging
-        System.out.println("Creating task with projectId: " + taskRequest.getProjectId() + " for organization: " + organizationId);
-        
-        // First, let's just check if the project exists at all
-        Project project = projectRepository.findById(taskRequest.getProjectId()).orElse(null);
+    @PreAuthorize(Roles.CAN_WRITE)
+    public Task createTask(@Valid @RequestBody TaskCreateRequest request, @AuthenticationPrincipal AppUserDetails me) {
+        Project project = projectRepository.findByIdAndOrganizationId(request.getProjectId(), me.getOrganizationId());
         if (project == null) {
-            System.out.println("Project not found with ID: " + taskRequest.getProjectId());
-            throw new RuntimeException("Project not found");
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Project not found");
         }
-        
-        // Check if project belongs to organization
-        if (project.getOrganization() == null) {
-            System.out.println("Project organization is null");
-            throw new RuntimeException("Project organization is null");
-        }
-        
-        if (!project.getOrganization().getId().equals(organizationId)) {
-            System.out.println("Project organization ID: " + project.getOrganization().getId() + " does not match user organization ID: " + organizationId);
-            throw new RuntimeException("Unauthorized access to project");
-        }
-        
-        // Create task
+
         Task task = new Task();
-        task.setTitle(taskRequest.getTitle());
-        task.setDescription(taskRequest.getDescription());
-        task.setStatus(Task.TaskStatus.valueOf(taskRequest.getStatus()));
-        task.setPriority(Task.Priority.valueOf(taskRequest.getPriority()));
+        task.setTitle(request.getTitle());
+        task.setDescription(request.getDescription());
+        task.setStatus(parseEnum(Task.TaskStatus.class, request.getStatus(), Task.TaskStatus.TODO, "status"));
+        task.setPriority(parseEnum(Task.Priority.class, request.getPriority(), Task.Priority.MEDIUM, "priority"));
         task.setProject(project);
-        
-        // Set assigned user if provided
-        if (taskRequest.getAssignedToId() != null) {
-            User assignedUser = userRepository.findById(taskRequest.getAssignedToId()).orElse(null);
-            task.setAssignedTo(assignedUser);
+        if (request.getAssignedToId() != null) {
+            task.setAssignedTo(resolveAssignee(request.getAssignedToId(), me));
         }
-        
-        // Set created by
-        User createdBy = userRepository.findById(userId).orElseThrow(() -> new RuntimeException("User not found"));
-        task.setCreatedBy(createdBy);
-        
-        // Set due date if provided
-        if (taskRequest.getDueDate() != null && !taskRequest.getDueDate().isEmpty()) {
-            try {
-                DateTimeFormatter formatter = DateTimeFormatter.ISO_DATE_TIME;
-                task.setDueDate(LocalDateTime.parse(taskRequest.getDueDate(), formatter));
-            } catch (Exception e) {
-                // If parsing fails, ignore due date
-            }
-        }
-        
+        task.setCreatedBy(userRepository.findById(me.getId())
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.UNAUTHORIZED, "User not found")));
+        task.setDueDate(parseDueDate(request.getDueDate()));
+
         return taskRepository.save(task);
     }
 
     @PutMapping("/{id}")
-    public Task updateTask(@PathVariable Long id, @RequestBody TaskCreateRequest taskDetails, 
-                          @RequestHeader("Authorization") String token) {
-        String jwt = token.substring(7);
-        Long organizationId = jwtUtil.extractOrganizationId(jwt);
-        
-        Task task = taskRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Task not found"));
+    @PreAuthorize(Roles.CAN_WRITE)
+    public Task updateTask(@PathVariable Long id, @RequestBody TaskUpdateRequest request,
+                           @AuthenticationPrincipal AppUserDetails me) {
+        Task task = findTaskInOrganization(id, me);
 
-        if (!task.getProject().getOrganization().getId().equals(organizationId)) {
-            throw new RuntimeException("Unauthorized access to task");
-        }
-
-        task.setTitle(taskDetails.getTitle());
-        task.setDescription(taskDetails.getDescription());
-        task.setStatus(Task.TaskStatus.valueOf(taskDetails.getStatus()));
-        task.setPriority(Task.Priority.valueOf(taskDetails.getPriority()));
-        
-        if (taskDetails.getAssignedToId() != null) {
-            User assignedUser = userRepository.findById(taskDetails.getAssignedToId()).orElse(null);
-            task.setAssignedTo(assignedUser);
-        }
-        
-        if (taskDetails.getDueDate() != null && !taskDetails.getDueDate().isEmpty()) {
-            try {
-                DateTimeFormatter formatter = DateTimeFormatter.ISO_DATE_TIME;
-                task.setDueDate(LocalDateTime.parse(taskDetails.getDueDate(), formatter));
-            } catch (Exception e) {
-                // If parsing fails, ignore due date
+        if (request.getTitle() != null) {
+            if (request.getTitle().isBlank()) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "title must not be blank");
             }
+            task.setTitle(request.getTitle());
+        }
+        if (request.getDescription() != null) {
+            task.setDescription(request.getDescription());
+        }
+        if (request.getStatus() != null) {
+            task.setStatus(parseEnum(Task.TaskStatus.class, request.getStatus(), null, "status"));
+        }
+        if (request.getPriority() != null) {
+            task.setPriority(parseEnum(Task.Priority.class, request.getPriority(), null, "priority"));
+        }
+        if (request.getAssignedToId() != null) {
+            task.setAssignedTo(resolveAssignee(request.getAssignedToId(), me));
+        }
+        if (request.getDueDate() != null) {
+            task.setDueDate(parseDueDate(request.getDueDate()));
         }
 
         return taskRepository.save(task);
     }
 
     @DeleteMapping("/{id}")
-    public void deleteTask(@PathVariable Long id, @RequestHeader("Authorization") String token) {
-        String jwt = token.substring(7);
-        Long organizationId = jwtUtil.extractOrganizationId(jwt);
-        
-        Task task = taskRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Task not found"));
+    @PreAuthorize(Roles.CAN_WRITE)
+    public void deleteTask(@PathVariable Long id, @AuthenticationPrincipal AppUserDetails me) {
+        taskRepository.delete(findTaskInOrganization(id, me));
+    }
 
-        if (!task.getProject().getOrganization().getId().equals(organizationId)) {
-            throw new RuntimeException("Unauthorized access to task");
+    // A task in another organization is reported as "not found" so its existence is not revealed.
+    private Task findTaskInOrganization(Long id, AppUserDetails me) {
+        return taskRepository.findByIdAndOrganizationId(id, me.getOrganizationId())
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Task not found"));
+    }
+
+    private User resolveAssignee(Long assigneeId, AppUserDetails me) {
+        return userRepository.findByIdAndOrganizationId(assigneeId, me.getOrganizationId())
+                .orElseThrow(() -> new ResponseStatusException(
+                        HttpStatus.BAD_REQUEST, "Assignee must belong to your organization"));
+    }
+
+    private static <E extends Enum<E>> E parseEnum(Class<E> type, String value, E defaultValue, String field) {
+        if (value == null || value.isBlank()) {
+            return defaultValue;
         }
+        try {
+            return Enum.valueOf(type, value.trim().toUpperCase());
+        } catch (IllegalArgumentException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid " + field);
+        }
+    }
 
-        taskRepository.delete(task);
+    private static LocalDateTime parseDueDate(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        try {
+            return LocalDateTime.parse(value, DateTimeFormatter.ISO_DATE_TIME);
+        } catch (DateTimeParseException ignored) {
+            // fall through and try a plain date
+        }
+        try {
+            return LocalDate.parse(value).atStartOfDay();
+        } catch (DateTimeParseException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid due date");
+        }
     }
 }
