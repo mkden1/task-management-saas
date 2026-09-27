@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
-import { Plus, FolderOpen, Trash2, Edit, X, Check } from 'lucide-react';
+import { Plus, FolderOpen, Trash2, Edit } from 'lucide-react';
 
 const Projects = () => {
   const { user } = useAuth();

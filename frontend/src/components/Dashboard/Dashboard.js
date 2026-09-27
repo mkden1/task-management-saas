@@ -25,10 +25,6 @@ const Dashboard = () => {
       // Require explicit project selection
       const projectId = newTask.projectId;
       
-      console.log('Creating task with projectId:', projectId);
-      console.log('Available projects:', projects);
-      console.log('New task data:', newTask);
-      
       if (!projectId) {
         alert('Please select a project before creating a task.');
         return;
@@ -41,8 +37,6 @@ const Dashboard = () => {
         status: newTask.status,
         projectId: projectId
       };
-
-      console.log('Sending task data:', taskData);
 
       await createTask(taskData);
       

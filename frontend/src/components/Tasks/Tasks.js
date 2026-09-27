@@ -4,7 +4,7 @@ import { useProject } from '../../contexts/ProjectContext';
 import { Plus, Edit2, Trash2, CheckCircle, Clock, AlertCircle, Calendar, User } from 'lucide-react';
 
 const Tasks = () => {
-  const { tasks, loading, fetchTasks, updateTask, deleteTask } = useTask();
+  const { tasks, loading, fetchTasks, createTask, updateTask, deleteTask } = useTask();
   const { projects, fetchProjects } = useProject();
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [editingTask, setEditingTask] = useState(null);
@@ -363,7 +363,7 @@ const TaskModal = ({ task, projects, onChange, onSave, onCancel, title }) => (
   </div>
 );
 
-const EditTaskForm = ({ task, projects, onSave, onCancel }) => {
+const EditTaskForm = ({ task, onSave, onCancel }) => {
   const [editedTask, setEditedTask] = useState(task);
 
   const handleSubmit = (e) => {

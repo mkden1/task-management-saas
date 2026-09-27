@@ -1,5 +1,5 @@
 import React from 'react';
-import { Users, Settings } from 'lucide-react';
+import { Users } from 'lucide-react';
 
 const Team = () => {
   return (
